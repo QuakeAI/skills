@@ -81,7 +81,7 @@ Recommended initial manifest shape:
   },
   "homepage": "https://quake.dev",
   "repository": "https://github.com/QuakeAI/skills",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "skills": "./skills/",
   "interface": {
     "displayName": "Quake OpenAPI",
