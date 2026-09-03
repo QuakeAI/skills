@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quake Installed App Actions"
+  short_description: "Build requests for connected app actions"
+  default_prompt: "Use $quake-installed-app-actions to discover an installed app action and build a schema-grounded request."

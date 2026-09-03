@@ -1,0 +1,32 @@
+{
+  "name": "quake-openapi",
+  "version": "0.1.0",
+  "description": "Customer-facing skills for building against the public Quake OpenAPI.",
+  "author": {
+    "name": "Quake",
+    "url": "https://quake.dev"
+  },
+  "homepage": "https://github.com/QuakeAI/skills",
+  "repository": "https://github.com/QuakeAI/skills",
+  "license": "Apache-2.0",
+  "keywords": [
+    "quake",
+    "openapi",
+    "api",
+    "developer-tools"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Quake OpenAPI",
+    "shortDescription": "Build with Quake's public API",
+    "longDescription": "Discover public Quake API operations and schemas, understand documented authentication, and build installed-app action workflows grounded in the live OpenAPI document.",
+    "developerName": "Quake",
+    "category": "Developer Tools",
+    "websiteURL": "https://quake.dev",
+    "defaultPrompt": [
+      "Find the Quake OpenAPI operation and schema for my task.",
+      "Explain how authentication works for this Quake API request.",
+      "Help me discover an installed app action and build a request for it."
+    ]
+  }
+}

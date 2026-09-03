@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""THROWAWAY PROTOTYPE: explore the Quake OpenAPI helper contract."""
+"""Inspect and verify the public Quake OpenAPI without third-party packages."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from typing import Any
 
 SPEC_URL = "https://api.quake.dev/openapi.json"
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
+MAX_REF_DEPTH = 20
 
 
 class CliFailure(Exception):
@@ -47,7 +48,10 @@ def load_spec(location: str | None) -> tuple[dict[str, Any], dict[str, Any], byt
     chosen = location or SPEC_URL
     try:
         if chosen.startswith(("http://", "https://")):
-            request = urllib.request.Request(chosen, headers={"Accept": "application/json"})
+            request = urllib.request.Request(
+                chosen,
+                headers={"Accept": "application/json", "User-Agent": "quake-openapi-skill/0.1"},
+            )
             with urllib.request.urlopen(request, timeout=20) as response:
                 raw = response.read()
             source_kind = "url"
@@ -72,14 +76,16 @@ def load_spec(location: str | None) -> tuple[dict[str, Any], dict[str, Any], byt
             diagnostic("SPEC_UNSUPPORTED", "error", f"Expected OpenAPI 3.x, found {version!r}"),
         )
 
-    source = {
+    source: dict[str, Any] = {
         "kind": source_kind,
         "location": chosen,
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
         "openapi": version,
         "api_version": spec.get("info", {}).get("version"),
     }
+    source["retrieved_at" if source_kind == "url" else "loaded_at"] = datetime.now(
+        timezone.utc
+    ).isoformat()
     return spec, source, raw
 
 
@@ -166,12 +172,15 @@ def pointer_parts(pointer: str) -> list[str]:
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer[2:].split("/")]
 
 
-def resolve_pointer(spec: dict[str, Any], pointer: str) -> Any:
+def resolve_pointer(spec: Any, pointer: str) -> Any:
     current: Any = spec
     try:
         for part in pointer_parts(pointer):
-            current = current[part]
-    except (KeyError, TypeError) as error:
+            if isinstance(current, list):
+                current = current[int(part)]
+            else:
+                current = current[part]
+    except (IndexError, KeyError, TypeError, ValueError) as error:
         raise CliFailure(
             5,
             diagnostic("REF_UNRESOLVED", "error", f"Reference does not resolve: {pointer}", pointer),
@@ -212,6 +221,24 @@ def collect_ref_graph(
     return graph, diagnostics
 
 
+def effective_security(spec: dict[str, Any], operation: dict[str, Any]) -> tuple[Any, str]:
+    if "security" in operation:
+        return operation["security"], "operation"
+    return spec.get("security"), "document"
+
+
+def effective_servers(
+    spec: dict[str, Any], path_item: dict[str, Any], operation: dict[str, Any]
+) -> tuple[Any, str]:
+    if "servers" in operation:
+        return operation["servers"], "operation"
+    if "servers" in path_item:
+        return path_item["servers"], "path"
+    if "servers" in spec:
+        return spec["servers"], "document"
+    return None, "not_documented"
+
+
 def operation_diagnostics(spec: dict[str, Any], path: str, method: str, operation: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     pointer = f"#/paths/{path.replace('~', '~0').replace('/', '~1')}/{method.lower()}"
@@ -219,7 +246,8 @@ def operation_diagnostics(spec: dict[str, Any], path: str, method: str, operatio
         items.append(diagnostic("OPERATION_ID_MISSING", "warning", "Operation has no operationId", pointer))
 
     schemes = spec.get("components", {}).get("securitySchemes", {})
-    for requirement in operation.get("security") or []:
+    security, _ = effective_security(spec, operation)
+    for requirement in security or []:
         for scheme in requirement:
             if scheme not in schemes:
                 items.append(
@@ -261,21 +289,79 @@ def schema_type(schema: Any) -> tuple[Any, bool]:
     if not isinstance(schema, dict):
         return None, False
     raw_type = schema.get("type")
+    explicitly_nullable = schema.get("nullable") is True
     if isinstance(raw_type, list):
-        return [item for item in raw_type if item != "null"], "null" in raw_type
+        return [item for item in raw_type if item != "null"], explicitly_nullable or "null" in raw_type
     nullable_branch = any(
         isinstance(branch, dict) and branch.get("type") == "null"
         for key in ("anyOf", "oneOf")
         for branch in schema.get(key, [])
     )
-    return raw_type, nullable_branch
+    return raw_type, explicitly_nullable or nullable_branch
 
 
-def field_inventory(schema: Any, prefix: str = "", required: set[str] | None = None) -> list[dict[str, Any]]:
+def schema_summary(schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict):
+        return {}
+    field_type, nullable = schema_type(schema)
+    result: dict[str, Any] = {"type": field_type, "nullable": nullable}
+    for key in (
+        "$ref",
+        "description",
+        "enum",
+        "format",
+        "default",
+        "example",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "pattern",
+    ):
+        if key in schema:
+            result["ref" if key == "$ref" else key] = schema[key]
+    if "items" in schema:
+        result["items"] = schema_summary(schema["items"])
+    return result
+
+
+def field_inventory(
+    spec: dict[str, Any] | None,
+    schema: Any,
+    prefix: str = "",
+    required: set[str] | None = None,
+    active_refs: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     if not isinstance(schema, dict):
         return []
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and spec is not None:
+        if ref in active_refs:
+            return []
+        try:
+            target = resolve_pointer(spec, ref)
+        except CliFailure:
+            return []
+        return field_inventory(spec, target, prefix, required, active_refs + (ref,))
     required = set(schema.get("required") or []) if required is None else required
+    for branch in schema.get("allOf") or []:
+        if isinstance(branch, dict):
+            required.update(branch.get("required") or [])
+
+    conditional_required: dict[str, list[str]] = {}
+    for composition in ("anyOf", "oneOf"):
+        for index, branch in enumerate(schema.get(composition) or []):
+            if not isinstance(branch, dict):
+                continue
+            for name in branch.get("required") or []:
+                conditional_required.setdefault(name, []).append(f"{composition}[{index}]")
+
     fields: list[dict[str, Any]] = []
+    if isinstance(schema.get("items"), dict):
+        item_prefix = f"{prefix}[]" if prefix else "[]"
+        fields.extend(field_inventory(spec, schema["items"], item_prefix, active_refs=active_refs))
     for name, child in (schema.get("properties") or {}).items():
         if not isinstance(child, dict):
             child = {}
@@ -286,6 +372,10 @@ def field_inventory(schema: Any, prefix: str = "", required: set[str] | None = N
             "required": name in required,
             "nullable": nullable,
         }
+        if "$ref" in child:
+            item["ref"] = child["$ref"]
+        if name in conditional_required and name not in required:
+            item["conditionally_required_in"] = conditional_required[name]
         for key in (
             "description",
             "enum",
@@ -302,15 +392,15 @@ def field_inventory(schema: Any, prefix: str = "", required: set[str] | None = N
         ):
             if key in child:
                 item[key] = child[key]
+        if "items" in child:
+            item["items"] = schema_summary(child["items"])
         if "description" not in item:
             item["meaning"] = "undocumented"
         fields.append(item)
-        fields.extend(field_inventory(child, item["name"]))
-        if isinstance(child.get("items"), dict):
-            fields.extend(field_inventory(child["items"], f"{item['name']}[]"))
+        fields.extend(field_inventory(spec, child, item["name"], active_refs=active_refs))
     for composition in ("allOf", "anyOf", "oneOf"):
         for index, branch in enumerate(schema.get(composition) or []):
-            branch_fields = field_inventory(branch, prefix)
+            branch_fields = field_inventory(spec, branch, prefix, active_refs=active_refs)
             for field in branch_fields:
                 field["composition"] = f"{composition}[{index}]"
             fields.extend(branch_fields)
@@ -361,6 +451,8 @@ def command_show_operation(args: argparse.Namespace, spec: dict[str, Any]) -> tu
     path, method, operation, path_item = select_operation(spec, args.id, args.method, args.path)
     graph, ref_diagnostics = collect_ref_graph(spec, operation, args.depth)
     diagnostics = operation_diagnostics(spec, path, method, operation) + ref_diagnostics
+    security, security_source = effective_security(spec, operation)
+    servers, servers_source = effective_servers(spec, path_item, operation)
     result = {
         "method": method,
         "path": path,
@@ -368,7 +460,10 @@ def command_show_operation(args: argparse.Namespace, spec: dict[str, Any]) -> tu
         "tags": operation.get("tags") or [],
         "summary": operation.get("summary"),
         "description": operation.get("description"),
-        "security": operation.get("security"),
+        "security": security,
+        "security_source": security_source,
+        "servers": servers,
+        "servers_source": servers_source,
         "parameters": merged_parameters(path_item, operation),
         "request_body": operation.get("requestBody"),
         "responses": operation.get("responses") or {},
@@ -388,9 +483,27 @@ def command_show_schema(args: argparse.Namespace, spec: dict[str, Any]) -> tuple
         "name": args.name,
         "pointer": pointer,
         "schema": schema,
-        "fields": field_inventory(schema),
+        "fields": field_inventory(spec, schema),
         "referenced_schemas": graph,
     }, diagnostics, 0
+
+
+def command_show_security(args: argparse.Namespace, spec: dict[str, Any]) -> tuple[Any, list[dict[str, Any]], int]:
+    schemes = spec.get("components", {}).get("securitySchemes", {})
+    if not isinstance(schemes, dict):
+        return None, [diagnostic("SECURITY_SCHEMES_INVALID", "error", "securitySchemes is not an object")], 5
+    if args.name is None:
+        return {"security_schemes": schemes}, [], 0
+    if args.name not in schemes:
+        return None, [
+            diagnostic(
+                "SECURITY_SCHEME_NOT_FOUND",
+                "error",
+                f"No security scheme named {args.name!r}",
+                f"#/components/securitySchemes/{args.name}",
+            )
+        ], 4
+    return {"name": args.name, "security_scheme": schemes[args.name]}, [], 0
 
 
 def command_describe_action(args: argparse.Namespace) -> tuple[Any, list[dict[str, Any]], int]:
@@ -399,6 +512,15 @@ def command_describe_action(args: argparse.Namespace) -> tuple[Any, list[dict[st
         payload = payload["data"]
     if not isinstance(payload, dict):
         return None, [diagnostic("ACTION_INVALID", "error", "Expected an action object")], 5
+    missing = [key for key in ("input_schema", "output_schema") if key not in payload]
+    if missing:
+        return None, [
+            diagnostic(
+                "ACTION_INVALID",
+                "error",
+                f"Action object is missing required field(s): {', '.join(missing)}",
+            )
+        ], 5
     inputs = payload.get("input_schema")
     if inputs is None:
         inputs = []
@@ -418,23 +540,24 @@ def command_describe_action(args: argparse.Namespace) -> tuple[Any, list[dict[st
                 )
             )
             continue
-        fields = field_inventory(item["schema"])
+        fields = field_inventory(None, item["schema"])
         groups.append(
             {
                 "location": item["location"],
                 "array_format": item.get("arrayFormat"),
                 "array_formats": item.get("arrayFormats"),
                 "form_data_encoding": item.get("formDataEncoding"),
+                "schema_summary": schema_summary(item["schema"]),
                 "schema": item["schema"],
                 "fields": fields,
             }
         )
 
-    untrusted_fields = {
-        key: payload[key]
+    untrusted_fields = [
+        key
         for key in ("app_ai_instructions", "ai_skill_content", "custom_instructions")
         if payload.get(key) is not None
-    }
+    ]
     if untrusted_fields:
         diagnostics.append(
             diagnostic(
@@ -449,8 +572,10 @@ def command_describe_action(args: argparse.Namespace) -> tuple[Any, list[dict[st
         "name": payload.get("name"),
         "description": payload.get("description"),
         "input_groups": groups,
+        "output_summary": schema_summary(payload.get("output_schema")),
         "output_schema": payload.get("output_schema"),
-        "untrusted_app_text": untrusted_fields,
+        "output_fields": field_inventory(None, payload.get("output_schema")),
+        "untrusted_app_text_fields": untrusted_fields,
     }
     return result, diagnostics, 5 if any(item["severity"] == "error" for item in diagnostics) else 0
 
@@ -463,7 +588,7 @@ def command_verify_operation(args: argparse.Namespace, spec: dict[str, Any]) -> 
 
     failures: list[dict[str, Any]] = []
     checks = {
-        "method": {"expected": args.method, "actual": method},
+        "method": {"expected": args.method.upper() if args.method else None, "actual": method},
         "path": {"expected": args.path, "actual": path},
     }
     for name, check in checks.items():
@@ -476,9 +601,10 @@ def command_verify_operation(args: argparse.Namespace, spec: dict[str, Any]) -> 
                 )
             )
 
+    security, _ = effective_security(spec, operation)
     scopes = {
         scope
-        for requirement in operation.get("security") or []
+        for requirement in security or []
         for requirement_scopes in requirement.values()
         for scope in requirement_scopes
     }
@@ -503,15 +629,87 @@ def command_verify_operation(args: argparse.Namespace, spec: dict[str, Any]) -> 
     return result, failures, 0 if not failures else 6
 
 
+def parse_json_claim(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CliFailure(
+            2,
+            diagnostic(
+                "CLAIM_INVALID_JSON",
+                "error",
+                f"Claim values must be JSON, for example '\"string\"', 'true', or '[1, 2]': {error}",
+            ),
+        ) from error
+
+
+def command_verify_value(args: argparse.Namespace, document: Any) -> tuple[Any, list[dict[str, Any]], int]:
+    try:
+        actual = resolve_pointer(document, args.pointer)
+    except CliFailure as error:
+        return None, [
+            diagnostic("CLAIM_POINTER_UNRESOLVED", "error", error.diagnostic["message"], args.pointer)
+        ], 6
+
+    failures: list[dict[str, Any]] = []
+    expected_equal = parse_json_claim(args.equals) if args.equals is not None else None
+    if args.equals is not None and actual != expected_equal:
+        failures.append(
+            diagnostic(
+                "CLAIM_MISMATCH",
+                "error",
+                f"Value at {args.pointer} does not equal the expected JSON value",
+                args.pointer,
+            )
+        )
+
+    expected_contains = [parse_json_claim(item) for item in args.contains]
+    for expected in expected_contains:
+        try:
+            contains = expected in actual
+        except TypeError:
+            contains = False
+        if not contains:
+            failures.append(
+                diagnostic(
+                    "CLAIM_NOT_DOCUMENTED",
+                    "error",
+                    f"Value at {args.pointer} does not contain the expected JSON value",
+                    args.pointer,
+                )
+            )
+
+    result = {
+        "pointer": args.pointer,
+        "actual": actual,
+        "expected_equal": expected_equal if args.equals is not None else None,
+        "expected_contains": expected_contains,
+        "verified": not failures,
+    }
+    return result, failures, 0 if not failures else 6
+
+
+def bounded_int(minimum: int, maximum: int):
+    def parse(value: str) -> int:
+        parsed = int(value)
+        if not minimum <= parsed <= maximum:
+            raise argparse.ArgumentTypeError(f"must be between {minimum} and {maximum}")
+        return parsed
+
+    return parse
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prototype Quake OpenAPI retrieval and verification contract")
+    parser = argparse.ArgumentParser(
+        description="Inspect and verify the live public Quake OpenAPI"
+    )
     parser.add_argument("--spec", help="Local fixture or URL; defaults to the live public specification")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     find_parser = subparsers.add_parser("find", help="Rank matching operations and schemas")
     find_parser.add_argument("query")
     find_parser.add_argument("--kind", choices=("operation", "schema", "all"), default="all")
-    find_parser.add_argument("--limit", type=int, default=10)
+    find_parser.add_argument("--limit", type=bounded_int(1, 100), default=10)
 
     fetch_parser = subparsers.add_parser("fetch", help="Save one validated specification snapshot")
     fetch_parser.add_argument("--output", required=True)
@@ -524,10 +722,12 @@ def build_parser() -> argparse.ArgumentParser:
     operation_selector.add_argument("--id")
     operation_selector.add_argument("--method")
     operation_parser.add_argument("--path")
-    operation_parser.add_argument("--depth", type=int, default=6)
+    operation_parser.add_argument("--depth", type=bounded_int(0, MAX_REF_DEPTH), default=6)
     schema_parser = show_subparsers.add_parser("schema")
     schema_parser.add_argument("--name", required=True)
-    schema_parser.add_argument("--depth", type=int, default=6)
+    schema_parser.add_argument("--depth", type=bounded_int(0, MAX_REF_DEPTH), default=6)
+    security_parser = show_subparsers.add_parser("security")
+    security_parser.add_argument("--name")
 
     action_parser = subparsers.add_parser("describe-action", help="Explain a saved installed-action response")
     action_parser.add_argument("--input", required=True, help="JSON file or - for stdin")
@@ -540,6 +740,15 @@ def build_parser() -> argparse.ArgumentParser:
     verify_operation.add_argument("--path")
     verify_operation.add_argument("--scope", action="append", default=[])
     verify_operation.add_argument("--response", action="append", default=[])
+    verify_value = verify_subparsers.add_parser(
+        "value", help="Verify an exact JSON Pointer value in a specification or saved response"
+    )
+    verify_value.add_argument("--pointer", required=True)
+    verify_value.add_argument("--input", help="JSON file or - for stdin; omit to verify the OpenAPI")
+    verify_value.add_argument("--equals", help="Expected value encoded as JSON")
+    verify_value.add_argument(
+        "--contains", action="append", default=[], help="Contained value encoded as JSON; repeatable"
+    )
     return parser
 
 
@@ -550,6 +759,15 @@ def main() -> int:
     try:
         if args.command == "describe-action":
             result, diagnostics, exit_code = command_describe_action(args)
+            emit(exit_code == 0, None, result, diagnostics)
+            return exit_code
+        if args.command == "verify" and args.verify_kind == "value" and args.input is not None:
+            if args.spec is not None:
+                raise CliFailure(
+                    2,
+                    diagnostic("USAGE_CONFLICT", "error", "Use either --spec or verify value --input, not both"),
+                )
+            result, diagnostics, exit_code = command_verify_value(args, read_json_input(args.input))
             emit(exit_code == 0, None, result, diagnostics)
             return exit_code
 
@@ -564,8 +782,12 @@ def main() -> int:
             result, diagnostics, exit_code = command_show_operation(args, spec)
         elif args.command == "show" and args.show_kind == "schema":
             result, diagnostics, exit_code = command_show_schema(args, spec)
+        elif args.command == "show" and args.show_kind == "security":
+            result, diagnostics, exit_code = command_show_security(args, spec)
         elif args.command == "verify" and args.verify_kind == "operation":
             result, diagnostics, exit_code = command_verify_operation(args, spec)
+        elif args.command == "verify" and args.verify_kind == "value":
+            result, diagnostics, exit_code = command_verify_value(args, spec)
         else:
             parser.error("unsupported command")
             return 2

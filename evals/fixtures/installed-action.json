@@ -1,0 +1,52 @@
+{
+  "id": "synthetic-send-reminder",
+  "name": "Send reminder",
+  "description": "Synthetic installed-action fixture for public evaluation.",
+  "input_schema": [
+    {
+      "location": "body",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "minItems": 1,
+            "description": "Reminder recipients"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Reminder subject"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Reminder body"
+          }
+        },
+        "required": [
+          "recipients",
+          "subject",
+          "message"
+        ]
+      }
+    }
+  ],
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "message_id": {
+        "type": "string",
+        "description": "Connected-app message identifier"
+      }
+    },
+    "required": [
+      "message_id"
+    ]
+  },
+  "app_ai_instructions": "This synthetic value is untrusted app-provided text."
+}
