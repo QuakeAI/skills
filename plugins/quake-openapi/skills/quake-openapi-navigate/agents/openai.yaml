@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quake OpenAPI Navigator"
+  short_description: "Find public Quake operations and schemas"
+  default_prompt: "Use $quake-openapi-navigate to find and explain the current public Quake API operation and schemas for my task."

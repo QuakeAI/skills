@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["generated_at", "spec", "runs_per_case", "cases", "summary", "passed"],
+  "properties": {
+    "generated_at": {"type": "string", "format": "date-time"},
+    "spec": {"type": "object"},
+    "runs_per_case": {"type": "integer", "minimum": 1},
+    "cases": {"type": "array"},
+    "summary": {"type": "object"},
+    "passed": {"type": "boolean"}
+  }
+}

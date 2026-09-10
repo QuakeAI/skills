@@ -1,0 +1,144 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Public test fixture",
+    "version": "0.0.0-test"
+  },
+  "servers": [
+    {
+      "url": "https://api.example.invalid",
+      "description": "Synthetic test server"
+    }
+  ],
+  "paths": {
+    "/items/{itemId}": {
+      "parameters": [
+        {
+          "name": "itemId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getItem",
+        "tags": [
+          "Items"
+        ],
+        "summary": "Get one item",
+        "security": [
+          {
+            "DemoOAuth": [
+              "items:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "description": "Operation-level definition wins.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Item"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/actions/{actionId}/execute": {
+      "post": {
+        "operationId": "executeAction",
+        "security": [
+          {
+            "MissingBearer": [
+              "actions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "name": "actionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done"
+          },
+          "202": {
+            "description": "Accepted"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "DemoOAuth": {
+        "type": "oauth2",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "/oauth/token",
+            "scopes": {
+              "items:read": "Read items"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Item identifier"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ItemDetails"
+          }
+        },
+        "required": [
+          "id",
+          "details"
+        ]
+      },
+      "ItemDetails": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quake OpenAPI Auth"
+  short_description: "Explain Quake authentication and scopes"
+  default_prompt: "Use $quake-openapi-auth to explain the documented Quake authentication flow and scopes for my request."

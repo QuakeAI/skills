@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "selected_skill",
+    "response",
+    "operations",
+    "claims",
+    "generated_code",
+    "network_trace"
+  ],
+  "properties": {
+    "selected_skill": {
+      "type": "string"
+    },
+    "response": {
+      "type": "string"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "method",
+          "path",
+          "scopes",
+          "responses"
+        ],
+        "properties": {
+          "operation_id": {"type": "string"},
+          "method": {"type": "string"},
+          "path": {"type": "string"},
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "responses": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "pointer", "value_json"],
+        "properties": {
+          "source": {"type": "string", "enum": ["openapi", "action_fixture"]},
+          "pointer": {"type": "string", "pattern": "^#/"},
+          "value_json": {"type": "string"}
+        }
+      }
+    },
+    "generated_code": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["language", "content"],
+        "properties": {
+          "language": {"type": "string", "enum": ["curl", "python", "typescript", "other"]},
+          "content": {"type": "string"}
+        }
+      }
+    },
+    "network_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "method", "path", "status"],
+        "properties": {
+          "operation_id": {"type": "string"},
+          "method": {"type": "string"},
+          "path": {"type": "string"},
+          "status": {"type": ["integer", "null"]}
+        }
+      }
+    }
+  }
+}
